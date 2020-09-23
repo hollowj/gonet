@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"gonet/base"
+	"gonet/message"
 	"gonet/rpc"
 	"log"
 	"reflect"
@@ -212,7 +213,12 @@ func (this *Actor) call(io CallIO) {
 			if len(out) == 1{
 				ret, bOk := out[0].Interface().(rpc.RetInfo)
 				if bOk{
-					rpc.Sync(head.SeqId, ret)
+					if head.SrcServerType != message.SERVICE_NONE{
+						head.DestServerType = head.SrcServerType
+						rpc.CLUSTER.SendMsg(head, "Sync_Call", ret.ToJson())
+					}else{
+						rpc.Sync(head.SeqId, ret)
+					}
 					return
 				}
 			}

@@ -50,6 +50,7 @@ message RpcHead{
     SEND SendType = 6;
     string ActorName = 7;
 	int64  SeqId = 8;
+	SERVICE  SrcServerType = 9;//源集群
 }
 
 //rpc 包
