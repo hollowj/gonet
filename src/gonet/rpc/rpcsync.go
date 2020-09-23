@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,6 +10,7 @@ import (
 var (
 	RpcSyncSeq     int64
 	RpcSyncSeqMap 	sync.Map
+	CLUSTER	ICluster
 )
 
 type(
@@ -21,11 +23,36 @@ type(
 		Err error
 		Ret []interface{}
 	}
+
+	RetInfoEx struct {
+		Err string
+		Ret []interface{}
+	}
+
+	ICluster interface {
+		SendMsg(RpcHead, string, ...interface{})
+	}
 )
 
 const(
 	MAX_RPC_TIMEOUT = 3*time.Second
 )
+
+func (this *RetInfo) ToJson() RetInfoEx{
+	ret := RetInfoEx{Err:"", Ret:this.Ret}
+	if this.Err != nil{
+		ret.Err = this.Err.Error()
+	}
+	return ret
+}
+
+func (this *RetInfoEx) ToJson() RetInfo{
+	ret := RetInfo{Err:nil, Ret:this.Ret}
+	if this.Err != ""{
+		ret.Err = errors.New(this.Err)
+	}
+	return ret
+}
 
 func CrateRpcSync() *RpcSync{
 	req := RpcSync{}
@@ -60,4 +87,11 @@ func Sync(seq int64, ret RetInfo) bool{
 	this.RegisterCall("rpctest", func(ctx context.Context, gateClusterId uint32, zoneClusterId uint32) rpc.RetInfo{
 		return rpc.RetInfo{nil, []interface{}{gateClusterId, zoneClusterId}}
 	})
+
+	this.RegisterCall("test", func(ctx context.Context, a , b int) rpc.RetInfo{
+		fmt.Println(a, b)
+		return rpc.RetInfo{Err:errors.New("test"), Ret:[]interface{}{a, b}}
+	})
+
+	fmt.Println(world.SERVER.GetClusterMgr().SyncMsg(rpc.RpcHead{DestServerType:message.SERVICE_ACCOUNTSERVER, SendType:message.SEND_BALANCE}, "test", 1, 2))
 */

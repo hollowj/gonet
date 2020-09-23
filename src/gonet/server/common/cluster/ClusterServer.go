@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"gonet/actor"
 	"gonet/base"
 	"gonet/message"
@@ -9,6 +10,7 @@ import (
 	"gonet/rpc"
 	"gonet/server/common"
 	"sync"
+	"time"
 )
 
 
@@ -37,6 +39,7 @@ type(
 
 		BindServer(*network.ServerSocket)
 		SendMsg(rpc.RpcHead, string, ...interface{})//发送给集群特定服务器
+		SyncMsg(rpc.RpcHead, string, ...interface{}) rpc.RetInfo//同步发送给集群特定服务器
 		Send(rpc.RpcHead, []byte)//发送给集群特定服务器
 
 		RandomCluster()	rpc.RpcHead//随机分配
@@ -54,6 +57,7 @@ func (this *ClusterServer) InitService(Type message.SERVICE, IP string, Port int
 	this.m_ClusterMap = make(HashClusterMap)
 	this.m_ClusterSocketMap = make(HashClusterSocketMap)
 	this.m_HashRing = base.NewHashRing()
+	rpc.CLUSTER = this
 }
 
 func (this *ClusterServer) RegisterClusterCall(){
@@ -70,6 +74,12 @@ func (this *ClusterServer) RegisterClusterCall(){
 		if pCluster != nil{
 			this.DelCluster(pCluster)
 		}
+	})
+
+	//同步call
+	this.RegisterCall("Sync_Call", func(ctx context.Context, ret rpc.RetInfoEx) {
+		head := this.GetRpcHead(ctx)
+		rpc.Sync(head.SeqId, ret.ToJson())
 	})
 }
 
@@ -167,6 +177,22 @@ func (this *ClusterServer) boardCastSend(head rpc.RpcHead, buff []byte){
 func (this *ClusterServer) SendMsg(head rpc.RpcHead, funcName string, params  ...interface{}){
 	buff := base.SetTcpEnd(rpc.Marshal(head, funcName, params...))
 	this.Send(head, buff)
+}
+
+func (this *ClusterServer) SyncMsg(head rpc.RpcHead,funcName string, params ...interface{}) rpc.RetInfo{
+	req := rpc.CrateRpcSync()
+	head.SeqId = req.Seq
+	head.SrcServerType = this.Type
+	this.SendMsg(head, funcName, params...)
+	select {
+	case v := <-req.RpcChan:
+		return v
+	case <-time.After(rpc.MAX_RPC_TIMEOUT):
+		// 清理请求
+		rpc.GetRpcSync(req.Seq)
+	}
+
+	return rpc.RetInfo{Err:errors.New("timeout"), Ret:[]interface{}{}, }
 }
 
 func (this *ClusterServer) Send(head rpc.RpcHead, buff []byte){
