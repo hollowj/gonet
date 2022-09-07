@@ -7,8 +7,8 @@ import (
 	"gonet/base"
 	"gonet/network"
 	"gonet/rpc"
-	"gonet/server/game/lmath"
 	"gonet/server/message"
+	"gonet/server/game/lmath"
 	"sync/atomic"
 
 	"github.com/golang/protobuf/proto"
@@ -26,7 +26,7 @@ type (
 		SimId       int64
 		Pos         lmath.Point3F
 		Rot         lmath.Point3F
-		m_Dh        base.Dh
+		dh          base.Dh
 	}
 
 	IEventProcess interface {
@@ -46,155 +46,131 @@ func ToCrc(accountName string, pwd string, buildNo string, nKey int64) uint32 {
 }
 
 func SendPacket(packet proto.Message) {
-	buff := message.Encode(packet)
-	CLIENT.Send(rpc.RpcHead{}, buff)
+	CLIENT.Send(rpc.RpcHead{}, rpc.Packet{Buff: message.Encode(packet)})
 }
 
-func (this *EventProcess) SendPacket(packet proto.Message) {
-	buff := message.Encode(packet)
-	this.Client.Send(rpc.RpcHead{}, buff)
+func (e *EventProcess) SendPacket(packet proto.Message) {
+	e.Client.Send(rpc.RpcHead{}, rpc.Packet{Buff: message.Encode(packet)})
 }
 
-func (this *EventProcess) PacketFunc(packet1 rpc.Packet) bool {
+func (e *EventProcess) PacketFunc(packet1 rpc.Packet) bool {
 	packetId, data := message.Decode(packet1.Buff)
-	packet := message.GetPakcet(packetId)
-	if packet == nil {
+	packetRoute := message.GetPakcetRoute(packetId)
+	if packetRoute == nil {
 		return true
 	}
+	packet := packetRoute.Func()
 	err := message.UnmarshalText(packet, data)
 	if err == nil {
-		this.Send(rpc.RpcHead{}, rpc.Marshal(rpc.RpcHead{}, message.GetMessageName(packet), packet))
+		head := rpc.RpcHead{}
+		e.Send(head, rpc.Marshal(&head, &packetRoute.FuncName, packet))
 		return true
 	}
 
 	return true
 }
 
-func (this *EventProcess) Init() {
-	this.Actor.Init()
-	this.Pos = lmath.Point3F{1, 1, 1}
-	this.m_Dh.Init()
-	this.RegisterTimer((network.HEART_TIME_OUT/3)*1000*1000*1000, this.Update) //定时器
-	this.RegisterCall("W_C_SelectPlayerResponse", func(ctx context.Context, packet *message.W_C_SelectPlayerResponse) {
-		this.AccountId = packet.GetAccountId()
-		nLen := len(packet.GetPlayerData())
-		//fmt.Println(len(packet.PlayerData), this.AccountId, packet.PlayerData)
-		if nLen == 0 {
-			packet1 := &message.C_W_CreatePlayerRequest{PacketHead: message.BuildPacketHead(this.AccountId, rpc.SERVICE_GATESERVER),
-				PlayerName: "我是大坏蛋",
-				Sex:        int32(0)}
-			this.SendPacket(packet1)
-		} else {
-			this.PlayerId = packet.GetPlayerData()[0].GetPlayerID()
-			this.LoginGame()
-		}
-	})
-
-	this.RegisterCall("W_C_CreatePlayerResponse", func(ctx context.Context, packet *message.W_C_CreatePlayerResponse) {
-		if packet.GetError() == 0 {
-			this.PlayerId = packet.GetPlayerId()
-			this.LoginGame()
-		} else { //创建失败
-
-		}
-	})
-
-	this.RegisterCall("G_C_LoginResponse", func(ctx context.Context, packet *message.G_C_LoginResponse) {
-		this.m_Dh.ExchangePubk(packet.GetKey())
-		this.LoginAccount()
-	})
-
-	this.RegisterCall("A_C_LoginResponse", func(ctx context.Context, packet *message.A_C_LoginResponse) {
-		if packet.GetError() == base.ACCOUNT_NOEXIST {
-			packet1 := &message.C_A_RegisterRequest{PacketHead: message.BuildPacketHead(0, rpc.SERVICE_GATESERVER),
-				AccountName: packet.AccountName, Password: this.PassWd}
-			this.SendPacket(packet1)
-		} else if packet.GetError() == base.PASSWORD_ERROR {
-			fmt.Println("账号【", packet.GetAccountName(), "】密码错误")
-		}
-	})
-
-	this.RegisterCall("A_C_RegisterResponse", func(ctx context.Context, packet *message.A_C_RegisterResponse) {
-		//注册失败
-		if packet.GetError() != 0 {
-		}
-	})
-
-	this.RegisterCall("W_C_ChatMessage", func(ctx context.Context, packet *message.W_C_ChatMessage) {
-		fmt.Println("收到【", packet.GetSenderName(), "】发送的消息[", packet.GetMessage()+"]")
-	})
-
-	//map
-	this.RegisterCall("Z_C_LoginMap", func(ctx context.Context, packet *message.Z_C_LoginMap) {
-		this.SimId = packet.GetId()
-		this.Pos = lmath.Point3F{packet.GetPos().GetX(), packet.GetPos().GetY(), packet.GetPos().GetZ()}
-		this.Rot = lmath.Point3F{0, 0, packet.GetRotation()}
-		//fmt.Println("login map")
-	})
-
-	this.RegisterCall("Z_C_ENTITY", func(ctx context.Context, packet *message.Z_C_ENTITY) {
-		for _, v := range packet.EntityInfo {
-			if v.Data != nil {
-				if v.Data.RemoveFlag {
-					fmt.Printf("Z_C_ENTITY_DATA  destory:[%d], [%d], [%t]\n", v.GetId(), v.Data.Type, v.Data.RemoveFlag)
-					continue
-				}
-				fmt.Printf("Z_C_ENTITY_DATA :[%d], [%d], [%t]\n", v.GetId(), v.Data.Type, v.Data.RemoveFlag)
-			}
-			if v.Move != nil {
-				if v.Id == this.SimId {
-					this.Pos = lmath.Point3F{v.Move.GetPos().GetX(), v.Move.GetPos().GetY(), v.Move.GetPos().GetZ()}
-					this.Rot = lmath.Point3F{0, 0, v.Move.GetRotation()}
-				}
-				fmt.Printf("Z_C_ENTITY_MOVE :[%d], Pos:[x:%f, y:%f, z:%f], Rot[%f]\n", v.GetId(), v.Move.GetPos().GetX(), v.Move.GetPos().GetY(), v.Move.GetPos().GetZ(), v.Move.GetRotation())
-			}
-		}
-	})
-
-	//链接断开
-	this.RegisterCall("DISCONNECT", func(ctx context.Context, socketId uint32) {
-		this.Stop()
-	})
-	this.Actor.Start()
+func (e *EventProcess) Init() {
+	e.Actor.Init()
+	e.Pos = lmath.Point3F{1, 1, 1}
+	e.dh.Init()
+	e.RegisterTimer((network.HEART_TIME_OUT/3)*1000*1000*1000, e.Update) //定时器
+	actor.MGR.RegisterActor(e)
+	e.Actor.Start()
 }
 
-func (this *EventProcess) LoginGame() {
-	packet1 := &message.C_W_Game_LoginRequset{PacketHead: message.BuildPacketHead(this.AccountId, rpc.SERVICE_GATESERVER),
-		PlayerId: this.PlayerId}
-	this.SendPacket(packet1)
+func (e *EventProcess) LoginGame() {
+	packet1 := &message.LoginPlayerRequset{PacketHead: message.BuildPacketHead(e.AccountId, rpc.SERVICE_GATE),
+		PlayerId: e.PlayerId,
+		Key:      e.dh.ShareKey(),
+	}
+	e.SendPacket(packet1)
 }
 
 var (
 	id int32
 )
 
-func (this *EventProcess) LoginAccount() {
+func (e *EventProcess) LoginAccount() {
 	id := atomic.AddInt32(&id, 1)
-	this.AccountName = fmt.Sprintf("test321%d", id)
-	this.PassWd = base.MD5(ToSlat(this.AccountName, "123456"))
-	//this.AccountName = fmt.Sprintf("test%d", base.RAND.RandI(0, 7000))
-	packet1 := &message.C_A_LoginRequest{PacketHead: message.BuildPacketHead(0, rpc.SERVICE_GATESERVER),
-		AccountName: this.AccountName, Password: this.PassWd, BuildNo: base.BUILD_NO, Key: this.m_Dh.ShareKey()}
-	this.SendPacket(packet1)
-}
-
-func (this *EventProcess) LoginGate() {
-	packet1 := &message.C_G_LoginResquest{PacketHead: message.BuildPacketHead(0, rpc.SERVICE_GATESERVER),
-		Key: this.m_Dh.PubKey()}
-	this.SendPacket(packet1)
+	e.AccountName = fmt.Sprintf("test3211%d", id)
+	e.PassWd = base.MD5(ToSlat(e.AccountName, "123456"))
+	//e.AccountName = fmt.Sprintf("test%d", base.RAND.RandI(0, 7000))
+	packet1 := &message.LoginAccountRequest{PacketHead: message.BuildPacketHead(0, rpc.SERVICE_GATE),
+		AccountName: e.AccountName, Password: e.PassWd, BuildNo: base.BUILD_NO, Key: e.dh.PubKey()}
+	e.SendPacket(packet1)
 }
 
 var (
 	PACKET *EventProcess
 )
 
-func (this *EventProcess) Move(yaw float32, time float32) {
-	packet1 := &message.C_Z_Move{PacketHead: message.BuildPacketHead(this.AccountId, rpc.SERVICE_GATESERVER),
-		Move: &message.C_Z_Move_Move{Mode: 0, Normal: &message.C_Z_Move_Move_Normal{Pos: &message.Point3F{X: this.Pos.X, Y: this.Pos.Y, Z: this.Pos.Z}, Yaw: yaw, Duration: time}}}
-	this.SendPacket(packet1)
+func (e *EventProcess) Move(yaw float32, time float32) {
+	packet1 := &message.C_Z_Move{PacketHead: message.BuildPacketHead(e.PlayerId, rpc.SERVICE_GATE),
+		Move: &message.C_Z_Move_Move{Mode: 0, Normal: &message.C_Z_Move_Move_Normal{Pos: &message.Point3F{X: e.Pos.X, Y: e.Pos.Y, Z: e.Pos.Z}, Yaw: yaw, Duration: time}}}
+	e.SendPacket(packet1)
 }
 
-func (this *EventProcess) Update() {
+func (e *EventProcess) Update() {
 	packet1 := &message.HeardPacket{}
-	this.SendPacket(packet1)
+	e.SendPacket(packet1)
+}
+
+func (e *EventProcess) LoginAccountResponse(ctx context.Context, packet *message.LoginAccountResponse) {
+	if packet.GetError() == base.ACCOUNT_NOEXIST {
+	} else if packet.GetError() == base.PASSWORD_ERROR {
+		fmt.Println("账号【", packet.GetAccountName(), "】密码错误")
+	}
+}
+
+func (e *EventProcess) SelectPlayerResponse(ctx context.Context, packet *message.SelectPlayerResponse) {
+	e.AccountId = packet.GetAccountId()
+	e.dh.ExchangePubk(packet.GetKey())
+	nLen := len(packet.GetPlayerData())
+	//fmt.Println(len(packet.PlayerData), e.AccountId, packet.PlayerData)
+	if nLen == 0 {
+		packet1 := &message.CreatePlayerRequest{PacketHead: message.BuildPacketHead(e.AccountId, rpc.SERVICE_GATE),
+			PlayerName: "我是大坏蛋",
+			Sex:        int32(0)}
+		e.SendPacket(packet1)
+	} else {
+		e.PlayerId = packet.GetPlayerData()[0].GetPlayerID()
+		e.LoginGame()
+	}
+}
+
+func (e *EventProcess) ChatMessageResponse(ctx context.Context, packet *message.ChatMessageResponse) {
+	fmt.Println("收到【", packet.GetSenderName(), "】发送的消息[", packet.GetMessage()+"]")
+}
+
+//map
+func (e *EventProcess) Z_C_LoginMap(ctx context.Context, packet *message.Z_C_LoginMap) {
+	e.SimId = packet.GetId()
+	e.Pos = lmath.Point3F{packet.GetPos().GetX(), packet.GetPos().GetY(), packet.GetPos().GetZ()}
+	e.Rot = lmath.Point3F{0, 0, packet.GetRotation()}
+	//fmt.Println("login map")
+}
+
+func (e *EventProcess) Z_C_ENTITY(ctx context.Context, packet *message.Z_C_ENTITY) {
+	for _, v := range packet.EntityInfo {
+		if v.Data != nil {
+			if v.Data.RemoveFlag {
+				fmt.Printf("Z_C_ENTITY_DATA  destory:[%d], [%d], [%t]\n", v.GetId(), v.Data.Type, v.Data.RemoveFlag)
+				continue
+			}
+			fmt.Printf("Z_C_ENTITY_DATA :[%d], [%d], [%t]\n", v.GetId(), v.Data.Type, v.Data.RemoveFlag)
+		}
+		if v.Move != nil {
+			if v.Id == e.SimId {
+				e.Pos = lmath.Point3F{v.Move.GetPos().GetX(), v.Move.GetPos().GetY(), v.Move.GetPos().GetZ()}
+				e.Rot = lmath.Point3F{0, 0, v.Move.GetRotation()}
+			}
+			fmt.Printf("Z_C_ENTITY_MOVE :[%d], Pos:[x:%f, y:%f, z:%f], Rot[%f]\n", v.GetId(), v.Move.GetPos().GetX(), v.Move.GetPos().GetY(), v.Move.GetPos().GetZ(), v.Move.GetRotation())
+		}
+	}
+}
+
+//链接断开
+func (e *EventProcess) DISCONNECT(ctx context.Context, socketId uint32) {
+	e.Stop()
 }

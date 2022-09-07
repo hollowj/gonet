@@ -2,13 +2,13 @@ package base
 
 import (
 	"errors"
-	"hash/crc32"
 	"gonet/base/maps"
+	"hash/crc32"
 	"strconv"
 	"sync"
 )
 
-const(
+const (
 	REPLICASNUM = 5
 )
 
@@ -18,9 +18,9 @@ var ErrEmptyRing = errors.New("empty ring")
 type (
 	// HashRing holds the information about the members of the consistent hash ring.
 	HashRing struct {
-		m_RingMap           map[uint32] string
-		m_MemberMap         map[string] bool
-		m_SortedKeys    	*maps.Map
+		ringMap    map[uint32]string
+		memberMap  map[string]bool
+		sortedKeys *maps.Map
 		sync.RWMutex
 	}
 
@@ -37,40 +37,14 @@ type (
 // New creates a new HashRing( object with a default setting of 20 replicas for each entry.
 // To change the number of replicas, set NumberOfReplicas before adding entries.
 func NewHashRing() *HashRing {
-	pRing := new(HashRing)
-	pRing.m_RingMap = make(map[uint32]string)
-	pRing.m_MemberMap = make(map[string]bool)
-	pRing.m_SortedKeys = maps.NewWithUInt32Comparator()
-	return pRing
+	ring := new(HashRing)
+	ring.ringMap = make(map[uint32]string)
+	ring.memberMap = make(map[string]bool)
+	ring.sortedKeys = maps.NewWithUInt32Comparator()
+	return ring
 }
 
-// eltKey generates a string key for an element with an index.
-func (this *HashRing) eltKey(elt string, idx int) string {
-	// return elt + "|" + strconv.Itoa(idx)
-	return strconv.Itoa(idx) + elt
-}
-
-// need c.Lock() before calling
-func (this *HashRing) add(elt string) {
-	for i := 0; i < REPLICASNUM; i++ {
-		Id := this.hashKey(this.eltKey(elt, i))
-		this.m_RingMap[Id] = elt
-		this.m_SortedKeys.Put(Id, true)
-	}
-	this.m_MemberMap[elt] = true
-}
-
-// need c.Lock() before calling
-func (this *HashRing) remove(elt string) {
-	for i := 0; i < REPLICASNUM; i++ {
-		Id := this.hashKey(this.eltKey(elt, i))
-		delete(this.m_RingMap, Id)
-		this.m_SortedKeys.Remove(Id)
-	}
-	delete(this.m_MemberMap, elt)
-}
-
-func (this *HashRing) hashKey(key string) uint32 {
+func hash(key string) uint32 {
 	if len(key) < 64 {
 		var scratch [64]byte
 		copy(scratch[:], key)
@@ -79,70 +53,143 @@ func (this *HashRing) hashKey(key string) uint32 {
 	return crc32.ChecksumIEEE([]byte(key))
 }
 
+// eltKey generates a string key for an element with an index.
+func (h *HashRing) eltKey(elt string, idx int) string {
+	// return elt + "|" + strconv.Itoa(idx)
+	return strconv.Itoa(idx) + elt
+}
+
+// need c.Lock() before calling
+func (h *HashRing) add(elt string) {
+	for i := 0; i < REPLICASNUM; i++ {
+		Id := hash(h.eltKey(elt, i))
+		h.ringMap[Id] = elt
+		h.sortedKeys.Put(Id, hash(elt))
+	}
+	h.memberMap[elt] = true
+}
+
+// need c.Lock() before calling
+func (h *HashRing) remove(elt string) {
+	for i := 0; i < REPLICASNUM; i++ {
+		Id := hash(h.eltKey(elt, i))
+		delete(h.ringMap, Id)
+		h.sortedKeys.Remove(Id)
+	}
+	delete(h.memberMap, elt)
+}
+
 // Add inserts a string element in the consistent hash.
-func (this *HashRing) Add(elt string) {
-	this.Lock()
-	defer this.Unlock()
-	this.add(elt)
+func (h *HashRing) Add(elt string) {
+	h.Lock()
+	defer h.Unlock()
+	h.add(elt)
 }
 
 // Remove removes an element from the hash.
-func (this *HashRing) Remove(elt string) {
-	this.Lock()
-	defer this.Unlock()
-	this.remove(elt)
+func (h *HashRing) Remove(elt string) {
+	h.Lock()
+	defer h.Unlock()
+	h.remove(elt)
 }
 
-func (this *HashRing) HasMember(elt string) bool{
-	this.RLock()
-	defer this.RUnlock()
-	_, bEx := this.m_MemberMap[elt]
+func (h *HashRing) HasMember(elt string) bool {
+	h.RLock()
+	defer h.RUnlock()
+	_, bEx := h.memberMap[elt]
 	return bEx
 }
 
-func (this *HashRing) Members() []string {
-	this.RLock()
-	defer this.RUnlock()
+func (h *HashRing) Members() []string {
+	h.RLock()
+	defer h.RUnlock()
 	var m []string
-	for k := range this.m_MemberMap {
+	for k := range h.memberMap {
 		m = append(m, k)
 	}
 	return m
 }
 
 // Get returns an element close to where name hashes to in the ring.
-func (this *HashRing) Get(name string) (error, string) {
-	this.RLock()
-	defer this.RUnlock()
-	if len(this.m_RingMap) == 0 {
+func (h *HashRing) Get(name string) (error, string) {
+	h.RLock()
+	defer h.RUnlock()
+	if len(h.ringMap) == 0 {
 		return ErrEmptyRing, ""
 	}
-	key := this.hashKey(name)
-	node, bOk := this.m_SortedKeys.Ceiling(key)
-	if !bOk{
-		itr := this.m_SortedKeys.Iterator()
-		if itr.First(){
-			return nil, this.m_RingMap[itr.Key().(uint32)]
+	key := hash(name)
+	node, bOk := h.sortedKeys.Ceiling(key)
+	if !bOk {
+		itr := h.sortedKeys.Iterator()
+		if itr.First() {
+			return nil, h.ringMap[itr.Key().(uint32)]
 		}
 		return ErrEmptyRing, ""
 	}
-	return nil, this.m_RingMap[node.Key.(uint32)]
+	return nil, h.ringMap[node.Key.(uint32)]
 }
 
-func (this *HashRing) Get64(val int64)  (error, uint32) {
-	this.RLock()
-	defer this.RUnlock()
-	if len(this.m_RingMap) == 0 {
+func (h *HashRing) Get64(val int64) (error, uint32) {
+	h.RLock()
+	defer h.RUnlock()
+	if len(h.ringMap) == 0 {
 		return ErrEmptyRing, 0
 	}
-	key := this.hashKey(strconv.FormatInt(val, 10))
-	node, bOk := this.m_SortedKeys.Ceiling(key)
-	if !bOk{
-		itr := this.m_SortedKeys.Iterator()
-		if itr.First(){
-			return nil, this.hashKey(this.m_RingMap[itr.Key().(uint32)])
+	key := hash(strconv.FormatInt(val, 10))
+	node, bOk := h.sortedKeys.Ceiling(key)
+	if !bOk {
+		itr := h.sortedKeys.Iterator()
+		if itr.First() {
+			return nil, itr.Value().(uint32)
 		}
 		return ErrEmptyRing, 0
 	}
-	return nil, this.hashKey(this.m_RingMap[node.Key.(uint32)])
+	return nil, node.Value.(uint32)
+}
+
+// use for stubring
+type (
+	// HashRing holds the information about the members of the consistent hash ring.
+	StubHashRing struct {
+		sortedKeys *maps.Map
+	}
+
+	IStuHashRing interface {
+		Init(endpoints []string)
+		Get(val int64) (error, uint32)
+	}
+)
+
+// eltKey generates a string key for an element with an index.
+func (h *StubHashRing) eltKey(elt string, idx int) string {
+	// return elt + "|" + strconv.Itoa(idx)
+	return strconv.Itoa(idx) + elt
+}
+
+func (h *StubHashRing) add(elt string) {
+	for i := 0; i < REPLICASNUM; i++ {
+		Id := hash(h.eltKey(elt, i))
+		h.sortedKeys.Put(Id, hash(elt))
+	}
+}
+
+// Add inserts a string element in the consistent hash.
+func (h *StubHashRing) Init(endpoints []string) {
+	h.sortedKeys = maps.NewWithUInt32Comparator()
+	for _, v := range endpoints {
+		h.add(v)
+	}
+}
+
+func (h *StubHashRing) Get(val int64) (error, uint32) {
+	key := hash(strconv.FormatInt(val, 10))
+	node, bOk := h.sortedKeys.Ceiling(key)
+	if !bOk {
+		itr := h.sortedKeys.Iterator()
+		if itr.First() {
+			return nil, itr.Value().(uint32)
+		}
+		return ErrEmptyRing, 0
+	}
+	return nil, node.Value.(uint32)
 }

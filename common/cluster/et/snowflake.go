@@ -12,65 +12,67 @@ import (
 
 const (
 	uuid_dir = "uuid/"
-	ttl_time = time.Minute
+	ttl_time = 30 * 60 * time.Second
+)
+
+type STATUS uint32
+
+const (
+	SET STATUS = iota
+	TTL STATUS = iota
 )
 
 type Snowflake struct {
-	m_Id      int64
-	m_KeysAPI client.KeysAPI
+	id      int64
+	keysAPI client.KeysAPI
+	status  STATUS //状态机
 }
 
-func (this *Snowflake) Key() string {
-	return uuid_dir + fmt.Sprintf("%d", this.m_Id)
+func (s *Snowflake) Key() string {
+	return uuid_dir + fmt.Sprintf("%d", s.id)
 }
 
-func (this *Snowflake) Run() {
+func (s *Snowflake) SET() bool {
+	//设置key
+	key := s.Key()
+	_, err := s.keysAPI.Set(context.Background(), key, "", &client.SetOptions{
+		TTL: ttl_time, PrevExist: client.PrevNoExist, NoValueOnSuccess: true,
+	})
+	if err != nil {
+		s.id = int64(base.RAND.RandI(1, int(base.WorkeridMax)))
+		return false
+	}
+
+	base.UUID.Init(s.id) //设置uuid
+	s.status = TTL
+	return true
+}
+
+func (s *Snowflake) TTL() {
+	//保持ttl
+	_, err := s.keysAPI.Set(context.Background(), s.Key(), "", &client.SetOptions{
+		TTL: ttl_time, Refresh: true, NoValueOnSuccess: true,
+	})
+	if err != nil {
+		s.status = SET
+	} else {
+		time.Sleep(ttl_time / 3)
+	}
+}
+
+func (s *Snowflake) Run() {
 	for {
-	TrySET:
-		//设置key
-		key := this.Key()
-		_, err := this.m_KeysAPI.Set(context.Background(), key, "", &client.SetOptions{
-			TTL: ttl_time, PrevExist: client.PrevNoExist, NoValueOnSuccess: true,
-		})
-		if err != nil {
-			resp, err := this.m_KeysAPI.Get(context.Background(), uuid_dir, &client.GetOptions{Quorum: true})
-			if err == nil && (resp != nil && resp.Node != nil) {
-				Ids := [base.WorkeridMax + 1]bool{}
-				for _, v := range resp.Node.Nodes {
-					Id := base.Int(v.Key[len(uuid_dir)+1:])
-					Ids[Id] = true
-				}
-
-				for i, v := range Ids {
-					if v == false {
-						this.m_Id = int64(i) & base.WorkeridMax
-						goto TrySET
-					}
-				}
-			}
-			this.m_Id++
-			this.m_Id = this.m_Id & base.WorkeridMax
-			goto TrySET
-		}
-
-		base.UUID.Init(this.m_Id) //设置uuid
-
-		//保持ttl
-	TryTTL:
-		_, err = this.m_KeysAPI.Set(context.Background(), key, "", &client.SetOptions{
-			TTL: ttl_time, Refresh: true, NoValueOnSuccess: true,
-		})
-		if err != nil {
-			goto TrySET
-		} else {
-			time.Sleep(time.Second * 10)
-			goto TryTTL
+		switch s.status {
+		case SET:
+			s.SET()
+		case TTL:
+			s.TTL()
 		}
 	}
 }
 
 //uuid生成器
-func (this *Snowflake) Init(endpoints []string) {
+func (s *Snowflake) Init(endpoints []string) {
 	cfg := client.Config{
 		Endpoints:               endpoints,
 		Transport:               client.DefaultTransport,
@@ -81,11 +83,13 @@ func (this *Snowflake) Init(endpoints []string) {
 	if err != nil {
 		log.Fatal("Error: cannot connec to etcd:", err)
 	}
-	this.m_Id = 0
-	this.m_KeysAPI = client.NewKeysAPI(etcdClient)
-	this.Start()
+	s.id = int64(base.RAND.RandI(1, int(base.WorkeridMax)))
+	s.keysAPI = client.NewKeysAPI(etcdClient)
+	for !s.SET() {
+	}
+	s.Start()
 }
 
-func (this *Snowflake) Start() {
-	go this.Run()
+func (s *Snowflake) Start() {
+	go s.Run()
 }

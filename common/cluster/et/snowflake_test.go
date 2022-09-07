@@ -3,76 +3,73 @@ package et_test
 import (
 	"context"
 	"fmt"
-	"go.etcd.io/etcd/client"
 	"gonet/base"
+	"gonet/common/cluster/et"
 	"log"
 	"testing"
 	"time"
+
+	"go.etcd.io/etcd/client"
 )
 
 type SnowflakeT struct {
-	m_Id int64
-	m_KeysAPI client.KeysAPI
-	m_UUID base.Snowflake
+	id      int64
+	keysAPI client.KeysAPI
+	UUID    base.Snowflake
+	status  et.STATUS //状态机
 }
 
-const(
-	uuid_dir1 =  "uuid1/"
-	ttl_time1 = time.Minute
-	WorkeridMax = 1<<9 -1 //mac下要调制最大连接数，默认256，最大 1 << 10
+const (
+	uuid_dir1   = "uuid1/"
+	ttl_time1   = time.Minute
+	WorkeridMax = 1<<13 - 1 //mac下要调制最大连接数，默认256，最大 1 << 10
 )
 
-func (this *SnowflakeT) Key() string{
-	return uuid_dir1 + fmt.Sprintf("%d", this.m_Id)
+func (s *SnowflakeT) Key() string {
+	return uuid_dir1 + fmt.Sprintf("%d", s.id)
 }
 
-func (this *SnowflakeT) Run(){
+func (s *SnowflakeT) SET() bool {
+	//设置key
+	key := s.Key()
+	_, err := s.keysAPI.Set(context.Background(), key, "", &client.SetOptions{
+		TTL: ttl_time1, PrevExist: client.PrevNoExist, NoValueOnSuccess: true,
+	})
+	if err != nil {
+		s.id = int64(base.RAND.RandI(1, int(base.WorkeridMax)))
+		return false
+	}
+
+	base.UUID.Init(s.id) //设置uuid
+	s.status = et.TTL
+	return true
+}
+
+func (s *SnowflakeT) TTL() {
+	//保持ttl
+	_, err := s.keysAPI.Set(context.Background(), s.Key(), "", &client.SetOptions{
+		TTL: ttl_time1, Refresh: true, NoValueOnSuccess: true,
+	})
+	if err != nil {
+		s.status = et.SET
+	} else {
+		time.Sleep(time.Second * 20)
+	}
+}
+
+func (s *SnowflakeT) Run() {
 	for {
-	TrySET:
-		//设置key
-		key := this.Key()
-		_, err := this.m_KeysAPI.Set(context.Background(), key, "", &client.SetOptions{
-			TTL: ttl_time1, PrevExist:client.PrevNoExist, NoValueOnSuccess:true,
-		})
-		if err != nil{
-			resp, err := this.m_KeysAPI.Get(context.Background(), uuid_dir1, &client.GetOptions{Quorum:true})
-			if err == nil && (resp != nil && resp.Node != nil){
-				Ids := [base.WorkeridMax+1]bool{}
-				for _, v := range resp.Node.Nodes{
-					Id := base.Int(v.Key[len(uuid_dir1) + 1:])
-					Ids[Id] = true
-				}
-
-				for i, v := range Ids{
-					if v == false{
-						this.m_Id = int64(i) & base.WorkeridMax
-						goto TrySET
-					}
-				}
-			}
-			this.m_Id++
-			this.m_Id = this.m_Id & WorkeridMax
-			goto TrySET
-		}
-
-		this.m_UUID.Init(this.m_Id)//设置uuid
-
-		//保持ttl
-	TryTTL:
-		_, err = this.m_KeysAPI.Set(context.Background(), key, "", &client.SetOptions{
-			TTL: ttl_time1, Refresh:true, NoValueOnSuccess:true,
-		})
-		if err != nil{
-			goto TrySET
-		}else{
-			time.Sleep(time.Second * 10)
-			goto TryTTL
+		switch s.status {
+		case et.SET:
+			s.SET()
+		case et.TTL:
+			s.TTL()
 		}
 	}
 }
 
 //uuid生成器
-func (this *SnowflakeT) Init(endpoints []string){
+func (s *SnowflakeT) Init(endpoints []string) {
 	cfg := client.Config{
 		Endpoints:               endpoints,
 		Transport:               client.DefaultTransport,
@@ -83,24 +80,24 @@ func (this *SnowflakeT) Init(endpoints []string){
 	if err != nil {
 		log.Fatal("Error: cannot connec to etcd:", err)
 	}
-	this.m_Id = 0
-	this.m_KeysAPI = client.NewKeysAPI(etcdClient)
-	this.Start()
+	s.id = int64(base.RAND.RandI(1, int(base.WorkeridMax)))
+	s.keysAPI = client.NewKeysAPI(etcdClient)
+	s.Start()
 }
 
-func (this *SnowflakeT) Start(){
-	go this.Run()
+func (s *SnowflakeT) Start() {
+	go s.Run()
 }
 
-func TestSnowFlake(t *testing.T){
+func TestSnowFlake(t *testing.T) {
 	group := []*SnowflakeT{}
-	for i := 0; i < int(WorkeridMax); i++{
+	for i := 0; i < int(1000); i++ {
 		v := &SnowflakeT{}
 		v.Init([]string{"http://127.0.0.1:2379"})
 		group = append(group, v)
 	}
 
-	for{
+	for {
 		time.Sleep(time.Second * 1)
 	}
 }

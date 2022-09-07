@@ -1,5 +1,9 @@
 package common
 
+import (
+	"gonet/rpc"
+)
+
 type (
 	Server struct {
 		Ip   string `yaml:"ip"`
@@ -36,8 +40,17 @@ type (
 	Raft struct {
 		Endpoints []string `yaml:"endpoints"`
 	}
-	
-	Http struct{
+
+	Http struct {
 		Listen string `yaml:"listen"`
+	}
+
+	StubRoute struct {
+		STUB rpc.STUB `yaml:"stub"`
+	}
+
+	Stub struct {
+		StubCount map[string]int64      `yaml:"stub_count"`
+		GmCount      int               `yaml:"gm_count"`
 	}
 )

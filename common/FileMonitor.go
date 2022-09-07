@@ -19,7 +19,7 @@ type (
 
 	FileMonitor struct {
 		actor.Actor
-		m_FilesMap map[string]*FileInfo
+		filesMap map[string]*FileInfo
 	}
 
 	IFileMonitor interface {
@@ -31,42 +31,35 @@ type (
 	}
 )
 
-func (this *FileMonitor) Init() {
-	this.Actor.Init()
-	this.m_FilesMap = map[string]*FileInfo{}
-	this.RegisterTimer(3*time.Second, this.update)
-	this.RegisterCall("addfile", func(ctx context.Context, fileName string, p *int64) {
-		pFunc := (*FileRead)(unsafe.Pointer(p))
-		this.addFile(fileName, *pFunc)
-	})
-
-	this.RegisterCall("delfile", func(ctx context.Context, fileName string) {
-		this.delFile(fileName)
-	})
-	this.Actor.Start()
+func (f *FileMonitor) Init() {
+	f.Actor.Init()
+	f.filesMap = map[string]*FileInfo{}
+	f.RegisterTimer(3*time.Second, f.update)
+	actor.MGR.RegisterActor(f)
+	f.Actor.Start()
 }
 
-func (this *FileMonitor) AddFile(fileName string, pFunc FileRead) {
+func (f *FileMonitor) AddFile(fileName string, pFunc FileRead) {
 	ponit := unsafe.Pointer(&pFunc)
-	this.SendMsg(rpc.RpcHead{}, "addfile", fileName, (*int64)(ponit))
+	f.SendMsg(rpc.RpcHead{}, "Addfile", fileName, (*int64)(ponit))
 }
 
-func (this *FileMonitor) addFile(fileName string, pFunc FileRead) {
+func (f *FileMonitor) addFile(fileName string, pFunc FileRead) {
 	file, err := os.Open(fileName)
 	if err == nil {
 		fileInfo, err := file.Stat()
 		if err == nil {
-			this.m_FilesMap[fileName] = &FileInfo{fileInfo, pFunc}
+			f.filesMap[fileName] = &FileInfo{fileInfo, pFunc}
 		}
 	}
 }
 
-func (this *FileMonitor) delFile(fileName string) {
-	delete(this.m_FilesMap, fileName)
+func (f *FileMonitor) delFile(fileName string) {
+	delete(f.filesMap, fileName)
 }
 
-func (this *FileMonitor) update() {
-	for i, v := range this.m_FilesMap {
+func (f *FileMonitor) update() {
+	for i, v := range f.filesMap {
 		file, err := os.Open(i)
 		if err == nil {
 			fileInfo, err := file.Stat()
@@ -77,4 +70,13 @@ func (this *FileMonitor) update() {
 			}
 		}
 	}
+}
+
+func (f *FileMonitor) Addfile(ctx context.Context, fileName string, p *int64) {
+	pFunc := (*FileRead)(unsafe.Pointer(p))
+	f.addFile(fileName, *pFunc)
+}
+
+func (f *FileMonitor) Delfile(ctx context.Context, fileName string) {
+	f.delFile(fileName)
 }

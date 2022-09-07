@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"gonet/base"
@@ -18,48 +17,19 @@ func OpenExcePb(filename string) {
 		return
 	}
 
-	dataTypes := []int{}
-	dataTypeNames := []string{}
-	stream := bytes.NewBuffer([]byte{})
-	filenames := strings.Split(filename, ".")
-	enumKVMap := make(map[int]map[string]int) //列 key val
-	enumKMap := map[string][]string{}         //列名对应key
-	enumNames := []string{}                   //列名
-	dataNames := []string{}
-	colNames := []string{}
-	{
-		sheet, bEx := xlFile.Sheet["Settings_Radio"]
-		if bEx {
-			for i, v := range sheet.Rows {
-				for i1, v1 := range v.Cells {
-					if v1.String() == "" {
-						continue
-					}
-					if i == 0 {
-						enumNames = append(enumNames, v1.String())
-					} else {
-						enumKMap[enumNames[i1]] = append(enumKMap[enumNames[i1]], v1.String())
-					}
-				}
-			}
-		}
-	}
-	for page, sheet := range xlFile.Sheets {
-		if page != 0 {
-			//other sheet
+	for _, sheet := range xlFile.Sheets {
+		if strings.Contains(sheet.Name, "~") {
 			continue
-			/*for _, row := range sheet.Rows {
-				//列不统一
-				for j := 0; j < sheet.MaxCol; j ++{
-					if j < len(row.Cells){
-						stream.WriteString(row.Cells[j].Value)
-					}else{
-						stream.WriteString("")
-					}
-				}
-			}
-			continue*/
 		}
+
+		dataTypes := []int{}
+		dataTypeNames := []string{}
+		stream := bytes.NewBuffer([]byte{})
+		structName := FILENAME(filename, sheet.Name, "")
+		enumKVMap := make(map[int]map[string]int) //列 key val
+		enumKMap := map[int][]string{}            //列名对应key
+		dataNames := []string{}
+		colNames := []string{}
 
 		//检查行列
 		func() {
@@ -91,35 +61,30 @@ func OpenExcePb(filename string) {
 					}
 
 					continue
+				} else if i == COL_VSTO {
+					if cell.String() == "" {
+						continue
+					}
+
+					enumNames := strings.Split(cell.String(), "\n")
+					for _, v1 := range enumNames {
+						enumKMap[j] = append(enumKMap[j], v1)
+					}
+					continue
 				} else if i == COL_TYPE {
-					coltype := strings.ToLower(cell.String())
-					rd := bufio.NewReader(strings.NewReader(coltype))
-					data, _, _ := rd.ReadLine()
-					coltype = strings.TrimSpace(string(data))
+					coltype := strings.TrimSpace(strings.ToLower(cell.String()))
 					if coltype == "enum" {
 						num := 0
-						KVMap := map[string]int{}
-						for data, _, _ := rd.ReadLine(); data != nil; {
-							slot := strings.Split(string(data), "=")
+						enumKVMap[j] = make(map[string]int)
+						for _, v1 := range enumKMap[j] {
+							slot := strings.Split(string(v1), "=")
 							if len(slot) == 2 {
-								KVMap[slot[0]] = base.Int(slot[1])
+								num = base.Int(slot[1])
+								v1 = slot[0]
 							}
-							data, _, _ = rd.ReadLine()
-						}
-						keys, bEx := enumKMap[colNames[j]]
-						if bEx {
-							_, bEx := enumKVMap[j]
-							if !bEx {
-								enumKVMap[j] = make(map[string]int)
-							}
-							for _, v := range keys {
-								val, bEx := KVMap[v]
-								if bEx {
-									num = val
-								}
-								enumKVMap[j][v] = num
-								num++
-							}
+
+							enumKVMap[j][v1] = num
+							num++
 						}
 					}
 
@@ -134,7 +99,7 @@ func OpenExcePb(filename string) {
 						dataTypes = append(dataTypes, base.DType_S8)
 						dataTypeNames = append(dataTypeNames, "int32")
 					case "int16":
-						dataTypes = append(dataTypes, base.DTypelinkClearS16)
+						dataTypes = append(dataTypes, base.DType_S16)
 						dataTypeNames = append(dataTypeNames, "int32")
 					case "int":
 						dataTypes = append(dataTypes, base.DType_S32)
@@ -181,7 +146,7 @@ func OpenExcePb(filename string) {
 					//basedata
 					{
 						stream.WriteString("message ")
-						stream.WriteString(filenames[0])
+						stream.WriteString(structName)
 						stream.WriteString("Data\n")
 						stream.WriteString("{\n")
 						id := 1
@@ -200,17 +165,17 @@ func OpenExcePb(filename string) {
 					//mgr
 					{
 						stream.WriteString("message ")
-						stream.WriteString(filenames[0])
+						stream.WriteString(structName)
 						stream.WriteString("DataMgr\n")
 						stream.WriteString("{\n")
 						stream.WriteString("\trepeated int64 Keys = 1;\n")
-						stream.WriteString(fmt.Sprintf("\trepeated %sData Items = 2;\n", filenames[0]))
-						stream.WriteString(fmt.Sprintf("\tmap<int64, %sData> ItemsMap = 3;\n", filenames[0]))
+						stream.WriteString(fmt.Sprintf("\trepeated %sData Items = 2;\n", structName))
+						stream.WriteString(fmt.Sprintf("\tmap<int64, %sData> ItemsMap = 3;\n", structName))
 						stream.WriteString("}\n")
 					}
 
 					//other sheet
-					file, err := os.Create(filenames[0] + ".proto")
+					file, err := os.Create(structName + ".proto")
 					if err == nil {
 						file.Write(stream.Bytes())
 						file.Close()
